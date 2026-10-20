@@ -109,6 +109,10 @@ python3 -c 'from pathlib import Path; [compile(path.read_text(), str(path), "exe
 docker compose config --quiet
 ```
 
+## Roadmap
+
+Planned improvements, including a clearer Settings page with separate save actions for energy, UPS, and e-mail configuration, are tracked in [ROADMAP.md](ROADMAP.md).
+
 ## License and third-party software
 
 NUTPulse is released under the [MIT License](LICENSE). Third-party notices are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
