@@ -1,0 +1,32 @@
+name: nutpulse
+
+services:
+  nutpulse:
+    image: ghcr.io/OWNER/nutpulse:latest
+    restart: unless-stopped
+    environment:
+      DATA_DIR: /data
+      TZ: ${TZ:-UTC}
+      NUT_HOST: ${NUT_HOST:?Set NUT_HOST in .env}
+      NUT_SERVER_NAME: ${NUT_SERVER_NAME:-NUT Server}
+      NUT_PORT: ${NUT_PORT:-3493}
+      NUT_POLL_INTERVAL: ${NUT_POLL_INTERVAL:-10}
+      ENERGY_PRICE: ${ENERGY_PRICE:-0}
+      WEB_USERNAME: ${WEB_USERNAME:-admin}
+      WEB_PASSWORD: ${WEB_PASSWORD:?Set WEB_PASSWORD in .env}
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET in .env}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+    volumes:
+      - nutpulse_data:/data
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+
+volumes:
+  nutpulse_data:
+    name: nutpulse_data
