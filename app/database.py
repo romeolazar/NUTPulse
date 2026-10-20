@@ -147,6 +147,29 @@ class Database:
                 continue
         return result
 
+    def create_initial_admin(self, username: str, password_hash: str, auth_secret: str) -> bool:
+        """Create the first administrator exactly once."""
+        now = int(time.time())
+        values = {
+            "auth_username": username,
+            "auth_password_hash": password_hash,
+            "auth_secret": auth_secret,
+        }
+        with self._write_lock, self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT key FROM settings WHERE key IN ('auth_username','auth_password_hash','auth_secret') LIMIT 1"
+            ).fetchone()
+            if existing is not None:
+                conn.rollback()
+                return False
+            conn.executemany(
+                "INSERT INTO settings(key,value,updated_at) VALUES(?,?,?)",
+                [(key, json.dumps(value), now) for key, value in values.items()],
+            )
+            conn.commit()
+        return True
+
     def ensure_energy_price(self, price: float) -> None:
         with self._write_lock, self.connect() as conn:
             count = conn.execute("SELECT COUNT(*) AS c FROM energy_prices").fetchone()["c"]

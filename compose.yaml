@@ -8,14 +8,14 @@ services:
     environment:
       DATA_DIR: /data
       TZ: ${TZ:-Europe/Bucharest}
-      NUT_HOST: ${NUT_HOST:-nut-server}
+      NUT_HOST: ${NUT_HOST:-}
       NUT_SERVER_NAME: ${NUT_SERVER_NAME:-NUT Server}
       NUT_PORT: ${NUT_PORT:-3493}
       NUT_POLL_INTERVAL: ${NUT_POLL_INTERVAL:-10}
       ENERGY_PRICE: ${ENERGY_PRICE:-1.20}
       WEB_USERNAME: ${WEB_USERNAME:-admin}
-      WEB_PASSWORD: ${WEB_PASSWORD:?Set WEB_PASSWORD in .env}
-      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET in .env}
+      WEB_PASSWORD: ${WEB_PASSWORD:-}
+      AUTH_SECRET: ${AUTH_SECRET:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
@@ -28,7 +28,7 @@ services:
     ports:
       - "127.0.0.1:${WEB_PORT:-9001}:8080"
     healthcheck:
-      test: ["CMD", "python", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)); raise SystemExit(0 if d.get('status') in ('ok','degraded') else 1)"]
+      test: ["CMD", "python", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)); raise SystemExit(0 if d.get('status') in ('ok','degraded','setup') else 1)"]
       interval: 15s
       timeout: 5s
       retries: 5

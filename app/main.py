@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .auth import hash_password, verify_password
 from .config import AppConfig
 from .database import Database
 from .poller import NutPoller
@@ -58,25 +59,57 @@ async def lifespan(_: FastAPI):
         await asyncio.gather(poll_task, report_task, return_exceptions=True)
 
 
-app = FastAPI(title="NUTPulse", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="NUTPulse", version="0.2.0", lifespan=lifespan)
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
+
+
+def env_auth_configured() -> bool:
+    return bool(config.web_password and config.auth_secret)
+
+
+def database_auth() -> tuple[str, str, str]:
+    return (
+        str(db.get_setting("auth_username", "")),
+        str(db.get_setting("auth_password_hash", "")),
+        str(db.get_setting("auth_secret", "")),
+    )
+
+
+def auth_configured() -> bool:
+    if config.auth_disabled or env_auth_configured():
+        return True
+    return all(database_auth())
+
+
+def active_username() -> str:
+    return config.web_username if env_auth_configured() else database_auth()[0]
+
+
+def session_secret() -> str:
+    return config.auth_secret if env_auth_configured() else database_auth()[2]
 
 
 def sign_session(username: str, ttl: int = 86400) -> str:
     expires = int(time.time()) + ttl
     payload = f"{username}|{expires}"
-    signature = hmac.new(config.auth_secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    signature = hmac.new(session_secret().encode(), payload.encode(), hashlib.sha256).hexdigest()
     return base64.urlsafe_b64encode(f"{payload}|{signature}".encode()).decode()
 
 
 def session_username(token: str) -> str | None:
     try:
+        if not auth_configured():
+            return None
         decoded = base64.urlsafe_b64decode(token.encode()).decode()
         username, expires_text, signature = decoded.rsplit("|", 2)
         payload = f"{username}|{expires_text}"
-        expected = hmac.new(config.auth_secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(signature, expected) or int(expires_text) < int(time.time()):
+        expected = hmac.new(session_secret().encode(), payload.encode(), hashlib.sha256).hexdigest()
+        if (
+            not hmac.compare_digest(signature, expected)
+            or int(expires_text) < int(time.time())
+            or not hmac.compare_digest(username, active_username())
+        ):
             return None
         return username
     except (ValueError, UnicodeDecodeError):
@@ -86,7 +119,7 @@ def session_username(token: str) -> str | None:
 def require_auth(request: Request) -> str:
     if config.auth_disabled:
         return "disabled"
-    if not config.auth_secret or not config.web_password:
+    if not auth_configured():
         raise HTTPException(status_code=503, detail="Authentication is not configured")
     username = session_username(request.cookies.get("nutpulse_session", ""))
     if not username:
@@ -105,9 +138,14 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class SetupRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    password: str = Field(min_length=12, max_length=256)
+
+
 class SettingsUpdate(BaseModel):
     energy_price: float = Field(ge=0, le=1000)
-    nut_host: str = Field(min_length=1, max_length=255)
+    nut_host: str = Field(default="", max_length=255)
     nut_port: int = Field(ge=1, le=65535)
     poll_interval: int = Field(ge=2, le=3600)
     weekly_report_enabled: bool = False
@@ -132,9 +170,13 @@ async def index() -> FileResponse:
 
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
-    status = "ok" if poller.state.last_success else "degraded"
+    host, _, _ = poller.connection_settings()
+    setup_required = not auth_configured()
+    status = "ok" if poller.state.last_success else "setup" if setup_required or not host else "degraded"
     return {
         "status": status,
+        "setup_required": setup_required,
+        "nut_configured": bool(host),
         "database": "ok" if config.database_path.exists() else "initializing",
         "poller": {
             "running": poller.state.running,
@@ -149,15 +191,48 @@ async def health() -> dict[str, Any]:
 @app.get("/api/auth/status")
 async def auth_status(request: Request) -> dict[str, Any]:
     if config.auth_disabled:
-        return {"authenticated": True, "disabled": True, "username": "disabled"}
+        return {"authenticated": True, "disabled": True, "setup_required": False, "username": "disabled"}
+    if not auth_configured():
+        return {"authenticated": False, "disabled": False, "setup_required": True, "username": None}
     username = session_username(request.cookies.get("nutpulse_session", ""))
-    return {"authenticated": bool(username), "disabled": False, "username": username}
+    return {"authenticated": bool(username), "disabled": False, "setup_required": False, "username": username}
+
+
+@app.post("/api/setup")
+async def setup(payload: SetupRequest, request: Request, response: Response) -> dict[str, Any]:
+    if config.auth_disabled or auth_configured():
+        raise HTTPException(status_code=409, detail="Initial setup is already complete")
+    origin = request.headers.get("origin")
+    if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
+        raise HTTPException(status_code=403, detail="Origin check failed")
+    created = db.create_initial_admin(
+        payload.username,
+        hash_password(payload.password),
+        secrets.token_urlsafe(48),
+    )
+    if not created:
+        raise HTTPException(status_code=409, detail="Initial setup is already complete")
+    response.set_cookie(
+        "nutpulse_session",
+        sign_session(payload.username),
+        httponly=True,
+        samesite="strict",
+        secure=config.cookie_secure,
+        max_age=86400,
+        path="/",
+    )
+    return {"authenticated": True, "username": payload.username}
 
 
 @app.post("/api/auth/login")
 async def login(payload: LoginRequest, response: Response) -> dict[str, Any]:
-    valid_user = hmac.compare_digest(payload.username, config.web_username)
-    valid_password = hmac.compare_digest(payload.password, config.web_password)
+    if not auth_configured():
+        raise HTTPException(status_code=409, detail="Initial setup is required")
+    valid_user = hmac.compare_digest(payload.username, active_username())
+    if env_auth_configured():
+        valid_password = hmac.compare_digest(payload.password, config.web_password)
+    else:
+        valid_password = verify_password(payload.password, database_auth()[1])
     if not (valid_user and valid_password):
         raise HTTPException(status_code=401, detail="Invalid username or password")
     response.set_cookie(
@@ -217,9 +292,11 @@ async def overview() -> dict[str, Any]:
     now = int(time.time())
     price = db.current_energy_price()
     devices = [serialize_device(item, now, price) for item in db.latest_devices()]
+    host, _, _ = poller.connection_settings()
     return {
         "updated_at": poller.state.last_success,
         "energy_price": price,
+        "nut_configured": bool(host),
         "all_online": bool(devices) and all(item["online"] and not item["stale"] for item in devices),
         "devices": devices,
     }

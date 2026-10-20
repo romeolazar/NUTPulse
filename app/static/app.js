@@ -11,6 +11,7 @@ const state = {
 const main = document.getElementById("main-content");
 const appShell = document.getElementById("app-shell");
 const loginView = document.getElementById("login-view");
+const setupView = document.getElementById("setup-view");
 const toastEl = document.getElementById("toast");
 
 const escapeHtml = (value) => String(value ?? "")
@@ -223,20 +224,21 @@ function loading() {
 async function renderOverview() {
   loading();
   const [data, history] = await Promise.all([api("/api/overview"), api("/api/history?range=24h")]);
-  const overall = data.all_online ? ["All systems online", ""] : ["Attention required", "warning"];
+  const overall = !data.nut_configured ? ["Ready for setup", "warning"] : data.all_online ? ["All systems online", ""] : ["Attention required", "warning"];
   const devices = data.devices || [];
   main.innerHTML = `${pageHeader("NUTPulse", overall[0], overall[1], `Updated ${relativeTime(data.updated_at)}`)}
-    ${devices.length ? `<section class="grid two-cols">${devices.map((device)=>upsCard(device)).join("")}</section>` : noDevices()}
-    <section class="grid two-cols" style="margin-top:16px">
-      <article class="panel chart-card"><h2 class="panel-title"><span class="icon">${uiIcon("battery")}</span>Battery & Load</h2>${combinedBatteryLoadChart(history.series)}</article>
-      <article class="panel chart-card"><h2 class="panel-title"><span class="icon">${uiIcon("plug-input")}</span>Input Voltage</h2>${chartSvg(history.series,"input_voltage",{min:180,max:260,unit:" V"})}</article>
-    </section>
-    ${technicalDetails(devices)}`;
-  updateConnection(data.all_online, data.updated_at);
+    ${devices.length ? `<section class="grid two-cols">${devices.map((device)=>upsCard(device)).join("")}</section>
+      <section class="grid two-cols" style="margin-top:16px">
+        <article class="panel chart-card"><h2 class="panel-title"><span class="icon">${uiIcon("battery")}</span>Battery & Load</h2>${combinedBatteryLoadChart(history.series)}</article>
+        <article class="panel chart-card"><h2 class="panel-title"><span class="icon">${uiIcon("plug-input")}</span>Input Voltage</h2>${chartSvg(history.series,"input_voltage",{min:180,max:260,unit:" V"})}</article>
+      </section>
+      ${technicalDetails(devices)}` : noDevices()}`;
+  document.querySelector("[data-configure-ups]")?.addEventListener("click",()=>navigate("settings"));
+  updateConnection(data.all_online, data.updated_at, data.nut_configured);
 }
 
 function noDevices() {
-  return `<section class="panel" style="padding:30px;text-align:center"><h2>No devices discovered yet</h2><p style="color:var(--muted)">Waiting for the NUT server. Check Settings if this persists.</p></section>`;
+  return `<section class="panel empty-state"><span class="empty-state-icon">${uiIcon("plug")}</span><h2>Connect your first UPS</h2><p>NUTPulse is ready. Add the address of an existing NUT server to discover its UPS devices.</p><button class="button primary" type="button" data-configure-ups>Open UPS settings</button></section>`;
 }
 
 function technicalDetails(devices) {
@@ -436,8 +438,9 @@ async function renderDevices() {
   const history = selected ? await api(`/api/history?range=24h&device=${encodeURIComponent(selected.nut_name)}`) : {series:[]};
   main.innerHTML = `${pageHeader("Devices", `${data.devices.length} devices connected`, connected?"":"warning", `Updated ${relativeTime(data.server.last_success)}`, "Hardware, battery and connection details")}
     ${data.devices.length ? `<section class="device-selector-grid">${data.devices.map(device=>deviceSelector(device,device.nut_name===selected.nut_name)).join("")}</section>${selectedDeviceDetails(selected,data.server,history)}` : noDevices()}`;
+  document.querySelector("[data-configure-ups]")?.addEventListener("click",()=>navigate("settings"));
   document.querySelectorAll("[data-select-device]").forEach(button=>button.addEventListener("click",()=>{state.selectedDevice=button.dataset.selectDevice;renderDevices().catch(showError);}));
-  updateConnection(connected, data.server.last_success);
+  updateConnection(connected, data.server.last_success, Boolean(data.server.host));
 }
 
 async function renderSettings() {
@@ -499,10 +502,10 @@ function bindSettings(settings) {
   document.querySelector("[data-page-link='history']").addEventListener("click",()=>navigate("history"));
 }
 
-function updateConnection(ok, updatedAt) {
+function updateConnection(ok, updatedAt, configured = true) {
   const indicator=document.getElementById("connection-indicator");
-  indicator.className=`connection-pill ${ok?"ok":"error"}`;
-  indicator.querySelector("span").textContent=ok?`Live · ${relativeTime(updatedAt)}`:"Connection issue";
+  indicator.className=`connection-pill ${ok?"ok":configured?"error":""}`;
+  indicator.querySelector("span").textContent=!configured?"UPS not configured":ok?`Live · ${relativeTime(updatedAt)}`:"Connection issue";
 }
 
 function showError(error) {
@@ -531,17 +534,42 @@ function showLogin() {
   state.authenticated=false;
   clearInterval(state.refreshTimer);
   appShell.classList.add("hidden");
+  setupView.classList.add("hidden");
   loginView.classList.remove("hidden");
+}
+
+function showSetup() {
+  state.authenticated=false;
+  clearInterval(state.refreshTimer);
+  appShell.classList.add("hidden");
+  loginView.classList.add("hidden");
+  setupView.classList.remove("hidden");
 }
 
 function showApp() {
   state.authenticated=true;
+  setupView.classList.add("hidden");
   loginView.classList.add("hidden");
   appShell.classList.remove("hidden");
   navigate(state.page);
 }
 
 document.querySelectorAll("[data-page]").forEach(button=>button.addEventListener("click",()=>navigate(button.dataset.page)));
+document.getElementById("setup-form").addEventListener("submit",async event=>{
+  event.preventDefault();
+  const error=document.getElementById("setup-error"); error.textContent="";
+  const username=document.getElementById("setup-username").value.trim();
+  const password=document.getElementById("setup-password").value;
+  const confirmation=document.getElementById("setup-password-confirm").value;
+  if(password!==confirmation){error.textContent="Passwords do not match";return;}
+  try {
+    const result=await api("/api/setup",{method:"POST",body:JSON.stringify({username,password})});
+    state.username=result.username;
+    document.getElementById("setup-password").value="";
+    document.getElementById("setup-password-confirm").value="";
+    showApp();
+  } catch (exc) { error.textContent=exc.message; }
+});
 document.getElementById("login-form").addEventListener("submit",async event=>{
   event.preventDefault();
   const error=document.getElementById("login-error"); error.textContent="";
@@ -555,6 +583,8 @@ document.getElementById("logout-button").addEventListener("click",async()=>{try{
 (async()=>{
   try {
     const auth=await api("/api/auth/status");
-    if(auth.authenticated) showApp(); else showLogin();
+    if(auth.setup_required) showSetup();
+    else if(auth.authenticated) showApp();
+    else showLogin();
   } catch { showLogin(); }
 })();

@@ -6,6 +6,10 @@ const index = readFileSync(new URL("../app/static/index.html", import.meta.url),
 
 assert.ok(index.includes("NUTPulse"), "Missing NUTPulse brand");
 assert.ok(!index.includes("UPS Power"), "Legacy UPS Power brand remains");
+assert.ok(index.includes('id="setup-view"'), "Missing first-run setup view");
+assert.ok(index.includes("Create admin account"), "Missing initial administrator action");
+assert.ok(source.includes('auth.setup_required'), "Frontend does not route new installations to setup");
+assert.ok(source.includes("Connect your first UPS"), "Missing empty-device onboarding state");
 
 const between = (start, end) => {
   const startAt = source.indexOf(start);

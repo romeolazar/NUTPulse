@@ -102,6 +102,21 @@
         <path d="M4 3h13l3 3v15H4V3Z" /><path d="M8 3v6h8V3M8 21v-7h8v7" />
       </symbol>
     </svg>
+    <div id="setup-view" class="login-view hidden">
+      <form id="setup-form" class="login-card setup-card">
+        <div class="brand-mark large"><svg class="brand-icon"><use href="#icon-power" /></svg></div>
+        <div class="setup-kicker">First run</div>
+        <h1>Welcome to NUTPulse</h1>
+        <p>Create the first administrator account. Your UPS connection can be added later from Settings.</p>
+        <label>Admin username<input id="setup-username" autocomplete="username" minlength="3" maxlength="64" value="admin" required /></label>
+        <label>Password<input id="setup-password" type="password" autocomplete="new-password" minlength="12" maxlength="256" required /></label>
+        <label>Confirm password<input id="setup-password-confirm" type="password" autocomplete="new-password" minlength="12" maxlength="256" required /></label>
+        <div class="setup-security">The password is stored only as a secure hash. No UPS server is configured during this step.</div>
+        <div id="setup-error" class="form-error"></div>
+        <button class="button primary full" type="submit">Create admin account</button>
+      </form>
+    </div>
+
     <div id="login-view" class="login-view hidden">
       <form id="login-form" class="login-card">
         <div class="brand-mark large"><svg class="brand-icon"><use href="#icon-power" /></svg></div>

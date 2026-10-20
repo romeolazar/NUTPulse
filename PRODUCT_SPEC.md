@@ -68,9 +68,9 @@ InfluxDB may be supported later, but it is not required for the first release.
 
 - Default mode is read-only.
 - The first release must not expose UPS shutdown, load-off, battery-test, or writable NUT commands.
-- NUT credentials, SMTP passwords, and application secrets must come from environment variables, Docker secrets, or protected configuration files.
+- NUT credentials, SMTP passwords, and application secrets must come from environment variables, Docker secrets, or the protected persistent database.
 - Secrets must never be returned by the API or rendered in the settings page.
-- Authentication is enabled by default.
+- Authentication is enabled by default. When credentials are not provided by the environment, a one-time first-run screen creates the initial administrator and stores only a password hash.
 - Sessions must use secure, HTTP-only cookies when served over HTTPS.
 - The application should bind to the configured interface only and be placed behind the existing reverse proxy when promoted to production.
 
@@ -369,7 +369,7 @@ services:
     image: romeolazar/nutpulse:latest
     restart: unless-stopped
     environment:
-      NUT_HOST: nut-server
+      NUT_HOST: ""
       NUT_PORT: "3493"
       TZ: Europe/Bucharest
     volumes:
@@ -378,7 +378,7 @@ services:
       - "127.0.0.1:9001:8080"
 ```
 
-The final Compose file must also declare the dependency on `nut-server` health and the required SMTP/authentication secrets.
+Deployments may leave the NUT host and authentication credentials empty so they can be created through the first-run experience. Environment-managed secrets remain supported.
 
 ## 16. Visual design
 

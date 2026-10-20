@@ -58,6 +58,11 @@ class NutPoller:
 
     async def poll_once(self) -> None:
         host, port, _ = self.connection_settings()
+        if not host:
+            self.state.last_error = ""
+            self.state.consecutive_errors = 0
+            self.state.devices_seen = 0
+            return
         client = NutClient(host, port)
         now = int(time.time())
         devices = await client.list_ups()

@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from app.auth import hash_password, verify_password
 from app.database import Database
 from app.reporting import previous_seven_days, render_report
 
@@ -49,6 +50,21 @@ class DatabaseTests(unittest.TestCase):
         self.db.insert_sample(device_id, variables, 2000, 1.2)
         _, _, complete = self.db.energy_and_cost(900, 2100)
         self.assertFalse(complete)
+
+    def test_initial_admin_can_only_be_created_once(self) -> None:
+        password_hash = hash_password("correct-horse-battery-staple")
+        self.assertTrue(self.db.create_initial_admin("admin", password_hash, "session-secret"))
+        self.assertFalse(self.db.create_initial_admin("other", password_hash, "other-secret"))
+        self.assertEqual(self.db.get_setting("auth_username"), "admin")
+        self.assertTrue(verify_password("correct-horse-battery-staple", self.db.get_setting("auth_password_hash")))
+
+
+class AuthenticationTests(unittest.TestCase):
+    def test_password_hash_round_trip(self) -> None:
+        encoded = hash_password("a-strong-password")
+        self.assertTrue(verify_password("a-strong-password", encoded))
+        self.assertFalse(verify_password("wrong-password", encoded))
+        self.assertNotIn("a-strong-password", encoded)
 
 
 class ReportTests(unittest.TestCase):

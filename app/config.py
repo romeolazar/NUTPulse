@@ -43,7 +43,7 @@ class AppConfig:
             data_dir=data_dir,
             database_path=data_dir / "nutpulse.db",
             timezone=os.getenv("TZ", "Europe/Bucharest"),
-            nut_host=os.getenv("NUT_HOST", "nut-server"),
+            nut_host=os.getenv("NUT_HOST", ""),
             nut_server_name=os.getenv("NUT_SERVER_NAME", "NUC"),
             nut_port=int(os.getenv("NUT_PORT", "3493")),
             nut_poll_interval=max(2, int(os.getenv("NUT_POLL_INTERVAL", "10"))),

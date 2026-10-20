@@ -6,7 +6,7 @@ NUTPulse connects to an existing NUT server and turns UPS telemetry into a focus
 
 It does not configure UPS hardware and does not send control commands to NUT.
 
-Docker images are published at [Docker Hub](https://hub.docker.com/r/romeolazar/nutpulse) for `linux/amd64` and `linux/arm64`. Use `romeolazar/nutpulse:latest` for the current release or `romeolazar/nutpulse:0.1.0` for a pinned deployment.
+Docker images are published at [Docker Hub](https://hub.docker.com/r/romeolazar/nutpulse) for `linux/amd64` and `linux/arm64`. Use `romeolazar/nutpulse:latest` for the current release.
 
 ## Screenshots
 
@@ -57,21 +57,6 @@ cd NUTPulse
 cp .env.example .env
 ```
 
-Edit `.env` and set at least:
-
-```dotenv
-NUT_HOST=nut-server
-NUT_SERVER_NAME=NUT Server
-WEB_PASSWORD=choose-a-strong-password
-AUTH_SECRET=replace-with-a-long-random-value
-```
-
-Generate a suitable authentication secret with:
-
-```bash
-python3 -c 'import secrets; print(secrets.token_urlsafe(48))'
-```
-
 Start the application:
 
 ```bash
@@ -79,13 +64,15 @@ docker compose pull
 docker compose up -d
 ```
 
-Open <http://127.0.0.1:9001> and sign in with the username and password from `.env`.
+Open <http://127.0.0.1:9001>. On first run, NUTPulse asks you to create the administrator account. No UPS server is configured automatically; add it later from **Settings → UPS setup**.
+
+The browser-created password is stored only as a `scrypt` hash, and the session secret is generated locally in the persistent database. Environment-managed credentials remain available for automated deployments.
 
 ## Configuration
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `NUT_HOST` | `nut-server` | NUT server hostname or address |
+| `NUT_HOST` | empty | Optional initial NUT server hostname or address |
 | `NUT_SERVER_NAME` | `NUT Server` | Friendly server name shown in Devices |
 | `NUT_PORT` | `3493` | NUT server TCP port |
 | `NUT_POLL_INTERVAL` | `10` | Polling interval in seconds |
@@ -93,8 +80,8 @@ Open <http://127.0.0.1:9001> and sign in with the username and password from `.e
 | `TZ` | `UTC` | Application timezone |
 | `RAW_SAMPLE_RETENTION_DAYS` | `90` | Raw sample retention period |
 | `WEB_USERNAME` | `admin` | Dashboard username |
-| `WEB_PASSWORD` | required | Dashboard password |
-| `AUTH_SECRET` | required | Secret used to sign sessions |
+| `WEB_PASSWORD` | empty | Optional environment-managed dashboard password |
+| `AUTH_SECRET` | empty | Required only with an environment-managed password |
 | `COOKIE_SECURE` | `false` | Set to `true` behind HTTPS |
 | `SMTP_*` | empty | Optional weekly-report SMTP configuration |
 
@@ -108,7 +95,7 @@ The database, `.env`, logs, and runtime configuration are intentionally excluded
 
 ## Production notes
 
-- Use a unique, strong `WEB_PASSWORD` and `AUTH_SECRET`.
+- Complete first-run setup immediately after deployment, or provide a unique `WEB_PASSWORD` and `AUTH_SECRET` through the environment.
 - Serve NUTPulse through HTTPS and enable `COOKIE_SECURE=true`.
 - Restrict the NUT server so it is reachable only from trusted networks or containers.
 - Do not publish `.env`, database files, SMTP credentials, UPS serial numbers, or internal addresses.
