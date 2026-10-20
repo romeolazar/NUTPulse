@@ -6,6 +6,8 @@ NUTPulse connects to an existing NUT server and turns UPS telemetry into a focus
 
 It does not configure UPS hardware and does not send control commands to NUT.
 
+Docker images are published at [Docker Hub](https://hub.docker.com/r/romeolazar/nutpulse) for `linux/amd64` and `linux/arm64`. Use `romeolazar/nutpulse:latest` for the current release or `romeolazar/nutpulse:0.1.0` for a pinned deployment.
+
 ## Screenshots
 
 All screenshots use fictional demonstration data.
@@ -73,7 +75,8 @@ python3 -c 'import secrets; print(secrets.token_urlsafe(48))'
 Start the application:
 
 ```bash
-docker compose up --build -d
+docker compose pull
+docker compose up -d
 ```
 
 Open <http://127.0.0.1:9001> and sign in with the username and password from `.env`.

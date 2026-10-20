@@ -2,9 +2,7 @@ name: nutpulse
 
 services:
   nutpulse:
-    build:
-      context: .
-    image: nutpulse:local
+    image: ${NUTPULSE_IMAGE:-romeolazar/nutpulse:latest}
     container_name: nutpulse
     restart: unless-stopped
     environment:
