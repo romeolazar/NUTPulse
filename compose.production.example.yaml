@@ -2,7 +2,7 @@ name: nutpulse
 
 services:
   nutpulse:
-    image: ghcr.io/OWNER/nutpulse:latest
+    image: ghcr.io/romeolazar/nutpulse:latest
     restart: unless-stopped
     environment:
       DATA_DIR: /data

@@ -366,7 +366,7 @@ Example service shape:
 ```yaml
 services:
   nutpulse:
-    image: ghcr.io/OWNER/nutpulse:latest
+    image: ghcr.io/romeolazar/nutpulse:latest
     restart: unless-stopped
     environment:
       NUT_HOST: nut-server

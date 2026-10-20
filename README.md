@@ -50,8 +50,8 @@ It does not issue `INSTCMD`, `SET`, forced shutdown, or UPS control commands.
 ## Quick start
 
 ```bash
-git clone https://github.com/OWNER/nutpulse.git
-cd nutpulse
+git clone https://github.com/romeolazar/NUTPulse.git
+cd NUTPulse
 cp .env.example .env
 ```
 
