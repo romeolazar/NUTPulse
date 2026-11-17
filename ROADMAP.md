@@ -90,3 +90,20 @@ Acceptance criteria:
 - a Homepage `customapi` widget can show live UPS data without a login cookie;
 - the token grants read-only access and can be revoked at any time;
 - tokens are never logged or displayed again after creation.
+
+### Make History date selection work
+
+On the History page the **Custom** range button is disabled and the date range next to **Export CSV** is a static label, so a period cannot be chosen by date.
+
+Planned changes:
+
+- enable **Custom** and let the user pick a start and end date (the date field next to **Export CSV** becomes the picker);
+- apply the chosen period to the totals, charts, per-UPS and monthly tables, events, and the CSV export;
+- use raw samples or hourly summaries automatically, depending on how old the period is;
+- validate the range (start before end, not in the future) and show a clear message for periods without data.
+
+Acceptance criteria:
+
+- selecting a custom period updates every History figure to that period;
+- the exported CSV matches the selected period;
+- the controls work on desktop and mobile.
