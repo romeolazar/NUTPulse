@@ -42,9 +42,9 @@ class AppConfig:
         return cls(
             data_dir=data_dir,
             database_path=data_dir / "nutpulse.db",
-            timezone=os.getenv("TZ", "Europe/Bucharest"),
+            timezone=os.getenv("TZ", "UTC"),
             nut_host=os.getenv("NUT_HOST", ""),
-            nut_server_name=os.getenv("NUT_SERVER_NAME", "NUC"),
+            nut_server_name=os.getenv("NUT_SERVER_NAME", "NUT Server"),
             nut_port=int(os.getenv("NUT_PORT", "3493")),
             nut_poll_interval=max(2, int(os.getenv("NUT_POLL_INTERVAL", "10"))),
             energy_price=max(0.0, float(os.getenv("ENERGY_PRICE", "1.20"))),

@@ -51,4 +51,10 @@ for (const devicesFeature of [
   assert.ok(source.includes(devicesFeature), `Missing Devices detail feature: ${devicesFeature}`);
 }
 
+for (const range of ['"90d"', '"1y"', "1 year"]) {
+  assert.ok(source.includes(range), `Missing history range ${range}`);
+}
+assert.ok(source.includes("Power (est.)"), "Estimated power is not labelled in the UI");
+assert.ok(source.includes("Monthly consumption"), "Missing monthly consumption table");
+
 console.log("Frontend checks passed: dynamic battery thresholds and Lucide-style icons across all pages.");

@@ -16,9 +16,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .auth import hash_password, verify_password
+from .auth import constant_time_equals, hash_password, verify_password
 from .config import AppConfig
 from .database import Database
+from .periods import month_windows
 from .poller import NutPoller
 from .reporting import ReportService
 
@@ -59,7 +60,7 @@ async def lifespan(_: FastAPI):
         await asyncio.gather(poll_task, report_task, return_exceptions=True)
 
 
-app = FastAPI(title="NUTPulse", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="NUTPulse", version="0.2.1", lifespan=lifespan)
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
 
@@ -106,9 +107,9 @@ def session_username(token: str) -> str | None:
         payload = f"{username}|{expires_text}"
         expected = hmac.new(session_secret().encode(), payload.encode(), hashlib.sha256).hexdigest()
         if (
-            not hmac.compare_digest(signature, expected)
+            not constant_time_equals(signature, expected)
             or int(expires_text) < int(time.time())
-            or not hmac.compare_digest(username, active_username())
+            or not constant_time_equals(username, active_username())
         ):
             return None
         return username
@@ -228,9 +229,9 @@ async def setup(payload: SetupRequest, request: Request, response: Response) -> 
 async def login(payload: LoginRequest, response: Response) -> dict[str, Any]:
     if not auth_configured():
         raise HTTPException(status_code=409, detail="Initial setup is required")
-    valid_user = hmac.compare_digest(payload.username, active_username())
+    valid_user = constant_time_equals(payload.username, active_username())
     if env_auth_configured():
-        valid_password = hmac.compare_digest(payload.password, config.web_password)
+        valid_password = constant_time_equals(payload.password, config.web_password)
     else:
         valid_password = verify_password(payload.password, database_auth()[1])
     if not (valid_user and valid_password):
@@ -280,6 +281,7 @@ def serialize_device(item: dict[str, Any], now: int, price: float) -> dict[str, 
         "input_voltage": item.get("input_voltage"),
         "output_voltage": item.get("output_voltage"),
         "real_power_w": power,
+        "power_estimated": bool(item.get("power_estimated")),
         "status": item.get("status") or "",
         "monthly_cost": monthly,
         "annual_cost": annual,
@@ -321,13 +323,32 @@ async def devices() -> dict[str, Any]:
     }
 
 
+HISTORY_RANGES = {"24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400, "90d": 90 * 86400, "1y": 365 * 86400}
+LONG_RANGES = {"90d", "1y"}
+
+
 @app.get("/api/history", dependencies=[Depends(require_auth)])
 async def history(range: str = "7d", device: str | None = None) -> dict[str, Any]:
-    seconds = {"24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400}.get(range, 7 * 86400)
+    if range not in HISTORY_RANGES:
+        range = "7d"
+    seconds = HISTORY_RANGES[range]
     end_ts = int(time.time())
     start_ts = end_ts - seconds
-    series = db.history(start_ts, end_ts, device)
-    energy, cost, complete = db.energy_and_cost(start_ts, end_ts, device)
+    if range in LONG_RANGES:
+        series = db.history_hourly(start_ts, end_ts, device)
+    else:
+        series = db.history(start_ts, end_ts, device)
+    totals = db.energy_summary(start_ts, end_ts, device)
+    per_device = []
+    if device is None:
+        for name in db.device_names():
+            item = db.energy_summary(start_ts, end_ts, name)
+            per_device.append({"nut_name": name, **item})
+    monthly = []
+    if range == "1y":
+        for label, month_start, month_end in month_windows(end_ts, config.timezone):
+            item = db.energy_summary(month_start, month_end, device)
+            monthly.append({"month": label, **item})
     events = db.events(start_ts, end_ts, device)
     duration = max(1, seconds)
     unavailable = sum(
@@ -341,9 +362,12 @@ async def history(range: str = "7d", device: str | None = None) -> dict[str, Any
         "end_ts": end_ts,
         "range": range,
         "device": device,
-        "energy_kwh": energy,
-        "cost": cost,
-        "complete": complete,
+        "energy_kwh": totals["energy_kwh"],
+        "cost": totals["cost"],
+        "complete": totals["complete"],
+        "estimated": totals["estimated"],
+        "per_device": per_device,
+        "monthly": monthly,
         "power_events": sum(1 for event in events if event["event_type"] == "utility_power_failed"),
         "availability": availability,
         "series": series,

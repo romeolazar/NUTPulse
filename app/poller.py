@@ -38,6 +38,8 @@ class NutPoller:
         self.config = config
         self.state = PollerState()
         self._stop = asyncio.Event()
+        self._device_failures: dict[str, int] = {}
+        self._maintenance_hour: int | None = None
 
     def connection_settings(self) -> tuple[str, int, int]:
         host = str(self.db.get_setting("nut_host", self.config.nut_host))
@@ -70,8 +72,15 @@ class NutPoller:
             raise NutClientError("NUT server returned no UPS devices")
         price = self.db.current_energy_price()
         seen = 0
+        failed: list[str] = []
         for ups in devices:
-            variables = await client.list_vars(ups.name)
+            try:
+                variables = await client.list_vars(ups.name)
+            except Exception as exc:  # one failing UPS must not stop the others from being recorded
+                failed.append(f"{ups.name}: {exc}")
+                self._device_failed(ups.name, exc, now)
+                continue
+            self._device_failures.pop(ups.name, None)
             device_id = self.db.upsert_device(ups.name, ups.description, variables, now)
             self.db.insert_sample(device_id, variables, now, price)
             tokens = set(variables.get("ups.status", "").split())
@@ -81,14 +90,32 @@ class NutPoller:
                     active[event_type] = (severity, message)
             self.db.sync_events(device_id, active, now)
             seen += 1
+        if seen == 0:
+            raise NutClientError("; ".join(failed))
         self.state.last_success = now
-        self.state.last_error = ""
+        self.state.last_error = "; ".join(failed)
         self.state.consecutive_errors = 0
         self.state.devices_seen = seen
 
+    def _device_failed(self, name: str, exc: Exception, now: int) -> None:
+        count = self._device_failures.get(name, 0) + 1
+        self._device_failures[name] = count
+        logger.warning("Reading UPS %s failed (%d in a row): %s", name, count, exc)
+        if count < 3:
+            return
+        device_id = self.db.device_id(name)
+        if device_id is None:
+            return
+        self.db.mark_device_offline(device_id, str(exc))
+        self.db.sync_events(device_id, {"communication_lost": ("critical", "Communication Lost")}, now)
+
+    def run_maintenance(self) -> None:
+        """Roll completed hours up into permanent hourly data, then prune old raw samples."""
+        self.db.rollup_hourly()
+        self.db.prune_samples(self.config.retention_days)
+
     async def run(self) -> None:
         self.state.running = True
-        prune_counter = 0
         while not self._stop.is_set():
             _, _, interval = self.connection_settings()
             try:
@@ -105,10 +132,13 @@ class NutPoller:
                             {"communication_lost": ("critical", "Communication Lost")},
                             now,
                         )
-            prune_counter += 1
-            if prune_counter >= max(1, 3600 // interval):
-                self.db.prune_samples(self.config.retention_days)
-                prune_counter = 0
+            current_hour = int(time.time()) // 3600
+            if current_hour != self._maintenance_hour:
+                try:
+                    await asyncio.to_thread(self.run_maintenance)
+                    self._maintenance_hour = current_hour
+                except Exception:
+                    logger.exception("Hourly rollup failed; will retry on the next cycle")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:

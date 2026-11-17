@@ -137,7 +137,7 @@ function upsCard(device, withDeviceMeta = false) {
       <div class="metric-list">
         ${metric("clock", "Runtime", formatRuntime(device.runtime_seconds))}
         ${metric("gauge", "Load", `${formatNumber(device.load_percent)}%`)}
-        ${metric("zap", "Real power", `${formatNumber(device.real_power_w)} W`, "accent-amber")}
+        ${powerMetric(device)}
         ${metric("plug-input", "Input voltage", `${formatNumber(device.input_voltage)} V`)}
         ${withDeviceMeta ? "" : metric("plug-output", "Output voltage", `${formatNumber(device.output_voltage)} V`)}
       </div>
@@ -253,7 +253,7 @@ async function renderHistory() {
   const multiDay = state.historyRange !== "24h";
   main.innerHTML = `${pageHeader("History", `${devicesData.devices.length} devices online`, "", `Updated ${relativeTime(devicesData.server.last_success)}`)}
     <div class="filter-row">
-      <div class="segmented">${["24h","7d","30d"].map(range=>`<button data-range="${range}" class="${state.historyRange===range?"active":""}">${range==="24h"?"24 hours":range==="7d"?"7 days":"30 days"}</button>`).join("")}<button disabled>Custom</button></div>
+      <div class="segmented">${Object.keys(RANGE_LABELS).map(range=>`<button data-range="${range}" class="${state.historyRange===range?"active":""}">${RANGE_LABELS[range]}</button>`).join("")}<button disabled>Custom</button></div>
       <select id="history-device" class="field-control"><option value="">All devices</option>${devicesData.devices.map(device=>`<option value="${escapeHtml(device.nut_name)}" ${state.historyDevice===device.nut_name?"selected":""}>${escapeHtml(device.nut_name)}</option>`).join("")}</select>
       <div class="field-control">${new Date(data.start_ts*1000).toLocaleDateString()} – ${new Date(data.end_ts*1000).toLocaleDateString()}</div>
       <button id="export-csv" class="button">${uiIcon("download", "button-icon")} Export CSV</button>
@@ -264,7 +264,8 @@ async function renderHistory() {
       ${kpi("triangle-alert","Power events",formatNumber(data.power_events))}
       ${kpi("circle-check","Availability",`${formatNumber(data.availability,2)}%`)}
     </section>
-    ${data.complete ? "" : `<p style="color:var(--amber);margin:10px 2px 0">Historical totals exclude data gaps longer than two minutes.</p>`}
+    ${data.complete ? "" : `<p style="color:var(--amber);margin:10px 2px 0">Historical totals exclude data gaps longer than fifteen minutes.</p>`}
+    ${energyTables(data)}
     <section class="grid two-cols" style="margin-top:16px">
       <article class="panel chart-card large"><h2 class="panel-title"><span class="icon">${uiIcon("chart-line")}</span>Power consumption</h2>${chartSvg(data.series,"real_power_w",{unit:" W",multiDay})}</article>
       <article class="panel chart-card"><h2 class="panel-title"><span class="icon">${uiIcon("battery")}</span>Battery & Load</h2>${combinedBatteryLoadChart(data.series,multiDay)}</article>
@@ -272,6 +273,21 @@ async function renderHistory() {
     </section>
     ${eventTable(data.events)}`;
   bindHistoryControls(data);
+}
+
+function powerMetric(device) {
+  const estimated = device.power_estimated && device.real_power_w != null;
+  return metric("zap", estimated ? "Power (est.)" : "Real power", `${estimated ? "~" : ""}${formatNumber(device.real_power_w)} W`, "accent-amber");
+}
+
+const RANGE_LABELS = { "24h": "24 hours", "7d": "7 days", "30d": "30 days", "90d": "90 days", "1y": "1 year" };
+
+function energyTables(data) {
+  const note = data.estimated ? `<p style="color:var(--muted);margin:10px 2px 0">Includes estimated power for UPS models that do not report real power (load × nominal power). Treat those figures as approximate.</p>` : "";
+  const cell = (item) => item.energy_kwh > 0 ? `${formatNumber(item.energy_kwh, 2)} kWh · ${formatNumber(item.cost, 2)} Lei${item.estimated ? " (est.)" : ""}` : "—";
+  const perDevice = data.per_device.length > 1 ? `<section class="panel table-panel" style="margin-top:16px"><h2 class="panel-title"><span class="icon">${uiIcon("zap")}</span>Consumption by UPS</h2><table><thead><tr><th>UPS</th><th>Energy and cost</th></tr></thead><tbody>${data.per_device.map(item=>`<tr><td>${escapeHtml(item.nut_name)}</td><td>${cell(item)}</td></tr>`).join("")}</tbody></table></section>` : "";
+  const monthly = data.monthly.length ? `<section class="panel table-panel" style="margin-top:16px"><h2 class="panel-title"><span class="icon">${uiIcon("coins")}</span>Monthly consumption</h2><table><thead><tr><th>Month</th><th>Energy and cost</th></tr></thead><tbody>${data.monthly.map(item=>`<tr><td>${escapeHtml(item.month)}</td><td>${cell(item)}${item.complete ? "" : " · gaps"}</td></tr>`).join("")}</tbody></table></section>` : "";
+  return `${note}${perDevice}${monthly}`;
 }
 
 function kpi(iconName, label, value) {
@@ -416,7 +432,7 @@ function selectedDeviceDetails(device, server, history) {
         <h3>${uiIcon("zap")} Electrical & connection</h3>
         ${detailRow("Input voltage",nutMeasurement(device.input_voltage,"V"))}
         ${detailRow("Output voltage",nutMeasurement(device.output_voltage,"V"))}
-        ${detailRow("Real power",nutMeasurement(device.real_power_w,"W",0))}
+        ${detailRow(device.power_estimated?"Power (estimated)":"Real power",nutMeasurement(device.real_power_w,"W",0))}
         ${detailRow("Frequency",nutMeasurement(frequency,"Hz"))}
         ${detailRow("Server",serverName)}
         ${detailRow("Endpoint",`${server.host}:${server.port}`)}

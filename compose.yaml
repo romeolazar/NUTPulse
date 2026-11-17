@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     environment:
       DATA_DIR: /data
-      TZ: ${TZ:-Europe/Bucharest}
+      TZ: ${TZ:-UTC}
       NUT_HOST: ${NUT_HOST:-}
       NUT_SERVER_NAME: ${NUT_SERVER_NAME:-NUT Server}
       NUT_PORT: ${NUT_PORT:-3493}

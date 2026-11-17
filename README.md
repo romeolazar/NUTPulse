@@ -27,6 +27,8 @@ All screenshots use fictional demonstration data.
 - Detailed per-device identity, battery health, electrical data, and raw NUT variables
 - Historical charts for power, battery, load, and input voltage
 - Monthly and annual energy-cost estimates for each UPS
+- Long-term energy and cost history (up to one year and beyond) with per-UPS and per-month breakdowns
+- Power estimation for UPS models that do not report real power
 - Warning and critical event history
 - Weekly HTML e-mail report preview and optional SMTP delivery
 - Cookie-based web authentication
@@ -78,7 +80,7 @@ The browser-created password is stored only as a `scrypt` hash, and the session 
 | `NUT_POLL_INTERVAL` | `10` | Polling interval in seconds |
 | `ENERGY_PRICE` | `1.20` | Initial energy price per kWh |
 | `TZ` | `UTC` | Application timezone |
-| `RAW_SAMPLE_RETENTION_DAYS` | `90` | Raw sample retention period |
+| `RAW_SAMPLE_RETENTION_DAYS` | `90` | Retention of raw samples; hourly summaries are kept indefinitely |
 | `WEB_USERNAME` | `admin` | Dashboard username |
 | `WEB_PASSWORD` | empty | Optional environment-managed dashboard password |
 | `AUTH_SECRET` | empty | Required only with an environment-managed password |
@@ -86,6 +88,12 @@ The browser-created password is stored only as a `scrypt` hash, and the session 
 | `SMTP_*` | empty | Optional weekly-report SMTP configuration |
 
 Settings saved from the interface are stored in the application database and take precedence over the corresponding initial defaults.
+
+## Long-term data
+
+Raw samples are collected at every poll and kept for `RAW_SAMPLE_RETENTION_DAYS`. Every completed hour is also summarised into a small hourly record (average power, battery, load and voltages, plus the energy and cost for that hour). Hourly records are never deleted, so the **History** page can show a full year of consumption — with a per-month table — long after the raw samples are gone. Raw samples are only pruned after they have been summarised.
+
+Some UPS models (for example APC Back-UPS) do not report real power in watts. For those, NUTPulse estimates power as `ups.load` × `ups.realpower.nominal`. Estimated values are marked **(est.)** in the interface and are approximate: lightly loaded UPS devices usually draw somewhat more than this formula suggests.
 
 ## Persistent data
 

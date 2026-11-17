@@ -20,6 +20,11 @@ def _decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value.encode("ascii"))
 
 
+def constant_time_equals(left: str, right: str) -> bool:
+    """Compare strings in constant time; unlike hmac.compare_digest on str, it accepts non-ASCII text."""
+    return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+
+
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
     derived = hashlib.scrypt(

@@ -50,8 +50,26 @@ CREATE TABLE IF NOT EXISTS samples (
     real_power_w REAL,
     status TEXT NOT NULL DEFAULT '',
     price_per_kwh REAL NOT NULL,
-    raw_json TEXT NOT NULL DEFAULT '{}'
+    raw_json TEXT NOT NULL DEFAULT '{}',
+    power_estimated INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS samples_hourly (
+    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    hour_ts INTEGER NOT NULL,
+    sample_count INTEGER NOT NULL,
+    battery_charge REAL,
+    runtime_seconds REAL,
+    load_percent REAL,
+    input_voltage REAL,
+    output_voltage REAL,
+    real_power_w REAL,
+    energy_kwh REAL NOT NULL DEFAULT 0,
+    cost REAL NOT NULL DEFAULT 0,
+    estimated INTEGER NOT NULL DEFAULT 0,
+    incomplete INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (device_id, hour_ts)
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,6 +100,16 @@ ON events(device_id, event_type) WHERE ended_at IS NULL;
 """
 
 MAX_INTEGRATION_GAP_SECONDS = 15 * 60
+HOUR_SECONDS = 3600
+ROLLUP_WATERMARK_KEY = "rollup_watermark"
+SAMPLE_METRICS = (
+    "battery_charge",
+    "runtime_seconds",
+    "load_percent",
+    "input_voltage",
+    "output_voltage",
+    "real_power_w",
+)
 
 
 def numeric(value: Any) -> float | None:
@@ -92,6 +120,18 @@ def numeric(value: Any) -> float | None:
         return number if math.isfinite(number) else None
     except (TypeError, ValueError):
         return None
+
+
+def power_watts(variables: dict[str, str]) -> tuple[float | None, bool]:
+    """Return (watts, estimated). UPS models without ups.realpower fall back to load% of nominal power."""
+    real = numeric(variables.get("ups.realpower"))
+    if real is not None:
+        return real, False
+    load = numeric(variables.get("ups.load"))
+    nominal = numeric(variables.get("ups.realpower.nominal"))
+    if load is not None and nominal is not None and load >= 0 and nominal > 0:
+        return nominal * load / 100, True
+    return None, False
 
 
 class Database:
@@ -114,7 +154,40 @@ class Database:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.executescript(SCHEMA)
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(samples)")}
+            if "power_estimated" not in columns:
+                conn.execute("ALTER TABLE samples ADD COLUMN power_estimated INTEGER NOT NULL DEFAULT 0")
             conn.commit()
+            self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version < 1:
+            self._migrate_v1(conn)
+            conn.execute("PRAGMA user_version = 1")
+            conn.commit()
+
+    def _migrate_v1(self, conn: sqlite3.Connection) -> None:
+        """Estimate power for older samples, then stop storing every NUT variable in every sample.
+
+        The latest variables are kept on the device row, so per-sample raw_json only wasted space.
+        """
+        conn.execute(
+            """
+            UPDATE samples SET
+                real_power_w = CAST(json_extract(raw_json, '$."ups.load"') AS REAL)
+                             * CAST(json_extract(raw_json, '$."ups.realpower.nominal"') AS REAL) / 100.0,
+                power_estimated = 1
+            WHERE real_power_w IS NULL
+              AND COALESCE(json_extract(raw_json, '$."ups.load"'), '') != ''
+              AND COALESCE(json_extract(raw_json, '$."ups.realpower.nominal"'), '') != ''
+              AND CAST(json_extract(raw_json, '$."ups.realpower.nominal"') AS REAL) > 0
+            """
+        )
+        slimmed = conn.execute("UPDATE samples SET raw_json='{}' WHERE raw_json != '{}'").rowcount
+        conn.commit()
+        if slimmed:
+            conn.execute("VACUUM")
 
     def get_setting(self, key: str, default: Any = None) -> Any:
         with self.connect() as conn:
@@ -224,6 +297,7 @@ class Database:
         return int(row["id"])
 
     def insert_sample(self, device_id: int, variables: dict[str, str], ts: int, price: float) -> None:
+        power, estimated = power_watts(variables)
         values = (
             device_id,
             ts,
@@ -232,17 +306,18 @@ class Database:
             numeric(variables.get("ups.load")),
             numeric(variables.get("input.voltage")),
             numeric(variables.get("output.voltage")),
-            numeric(variables.get("ups.realpower")),
+            power,
             variables.get("ups.status", ""),
             price,
-            json.dumps(variables, separators=(",", ":")),
+            "{}",
+            int(estimated),
         )
         with self._write_lock, self.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO samples(device_id,ts,battery_charge,runtime_seconds,load_percent,input_voltage,
-                    output_voltage,real_power_w,status,price_per_kwh,raw_json)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    output_voltage,real_power_w,status,price_per_kwh,raw_json,power_estimated)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 values,
             )
@@ -254,6 +329,20 @@ class Database:
             conn.execute("UPDATE devices SET online=0,last_error=?", (error[:500],))
             conn.commit()
         return [int(row["id"]) for row in rows]
+
+    def mark_device_offline(self, device_id: int, error: str) -> None:
+        with self._write_lock, self.connect() as conn:
+            conn.execute("UPDATE devices SET online=0,last_error=? WHERE id=?", (error[:500], device_id))
+            conn.commit()
+
+    def device_id(self, nut_name: str) -> int | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT id FROM devices WHERE nut_name=?", (nut_name,)).fetchone()
+        return int(row["id"]) if row else None
+
+    def device_names(self) -> list[str]:
+        with self.connect() as conn:
+            return [row["nut_name"] for row in conn.execute("SELECT nut_name FROM devices ORDER BY nut_name")]
 
     def sync_events(self, device_id: int, active: dict[str, tuple[str, str]], ts: int) -> None:
         with self._write_lock, self.connect() as conn:
@@ -276,7 +365,7 @@ class Database:
         query = """
         SELECT d.*,
                s.ts AS sample_ts,s.battery_charge,s.runtime_seconds,s.load_percent,s.input_voltage,
-               s.output_voltage,s.real_power_w,s.status,s.price_per_kwh,s.raw_json AS sample_raw_json
+               s.output_voltage,s.real_power_w,s.power_estimated,s.status,s.price_per_kwh
         FROM devices d
         LEFT JOIN samples s ON s.id=(
             SELECT id FROM samples WHERE device_id=d.id ORDER BY ts DESC,id DESC LIMIT 1
@@ -289,7 +378,7 @@ class Database:
         for row in rows:
             item = dict(row)
             try:
-                item["variables"] = json.loads(item.pop("sample_raw_json") or item["raw_json"])
+                item["variables"] = json.loads(item["raw_json"] or "{}")
             except json.JSONDecodeError:
                 item["variables"] = {}
             result.append(item)
@@ -330,38 +419,197 @@ class Database:
             rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
-    def energy_and_cost(self, start_ts: int, end_ts: int, device_name: str | None = None) -> tuple[float, float, bool]:
-        params: list[Any] = [start_ts, end_ts]
-        where = "s.ts BETWEEN ? AND ? AND s.real_power_w IS NOT NULL"
-        if device_name:
-            where += " AND d.nut_name=?"
-            params.append(device_name)
-        with self.connect() as conn:
+    def _rollup_watermark(self, conn: sqlite3.Connection) -> int:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (ROLLUP_WATERMARK_KEY,)).fetchone()
+        if row is None:
+            return 0
+        try:
+            return int(json.loads(row["value"]))
+        except (ValueError, TypeError):
+            return 0
+
+    def rollup_hourly(self, now: int | None = None, chunk_hours: int = 24 * 7) -> int:
+        """Aggregate every completed hour of raw samples into samples_hourly.
+
+        Hourly rows are kept forever, so long-term consumption survives raw-sample pruning.
+        Returns the number of hourly rows written.
+        """
+        now = int(time.time()) if now is None else now
+        end_ts = now - now % HOUR_SECONDS
+        written = 0
+        with self._write_lock, self.connect() as conn:
+            watermark = self._rollup_watermark(conn)
+            if watermark == 0:
+                first = conn.execute("SELECT MIN(ts) AS t FROM samples").fetchone()["t"]
+                if first is None:
+                    return 0
+                watermark = int(first) - int(first) % HOUR_SECONDS
+            while watermark < end_ts:
+                chunk_end = min(end_ts, watermark + chunk_hours * HOUR_SECONDS)
+                written += self._rollup_chunk(conn, watermark, chunk_end)
+                conn.execute(
+                    "INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                    (ROLLUP_WATERMARK_KEY, json.dumps(chunk_end), int(time.time())),
+                )
+                conn.commit()
+                watermark = chunk_end
+        return written
+
+    def _rollup_chunk(self, conn: sqlite3.Connection, start_ts: int, end_ts: int) -> int:
+        written = 0
+        for device in conn.execute("SELECT id FROM devices").fetchall():
+            device_id = int(device["id"])
+            previous = conn.execute(
+                """SELECT ts,real_power_w,price_per_kwh,power_estimated FROM samples
+                   WHERE device_id=? AND ts<? AND real_power_w IS NOT NULL ORDER BY ts DESC LIMIT 1""",
+                (device_id, start_ts),
+            ).fetchone()
             rows = conn.execute(
-                f"""SELECT d.nut_name,s.ts,s.real_power_w,s.price_per_kwh
-                    FROM samples s JOIN devices d ON d.id=s.device_id
-                    WHERE {where} ORDER BY d.nut_name,s.ts""",
-                params,
+                f"""SELECT ts,{",".join(SAMPLE_METRICS)},price_per_kwh,power_estimated FROM samples
+                    WHERE device_id=? AND ts>=? AND ts<? ORDER BY ts""",
+                (device_id, start_ts, end_ts),
             ).fetchall()
+            buckets: dict[int, dict[str, Any]] = {}
+            for row in rows:
+                hour = int(row["ts"]) - int(row["ts"]) % HOUR_SECONDS
+                bucket = buckets.setdefault(
+                    hour,
+                    {
+                        "count": 0,
+                        "sums": dict.fromkeys(SAMPLE_METRICS, 0.0),
+                        "counts": dict.fromkeys(SAMPLE_METRICS, 0),
+                        "energy": 0.0,
+                        "cost": 0.0,
+                        "estimated": 0,
+                        "incomplete": 0,
+                    },
+                )
+                bucket["count"] += 1
+                for metric in SAMPLE_METRICS:
+                    if row[metric] is not None:
+                        bucket["sums"][metric] += float(row[metric])
+                        bucket["counts"][metric] += 1
+                if row["real_power_w"] is None:
+                    continue
+                if previous is not None:
+                    elapsed = int(row["ts"]) - int(previous["ts"])
+                    if 0 < elapsed <= MAX_INTEGRATION_GAP_SECONDS:
+                        avg_w = (float(previous["real_power_w"]) + float(row["real_power_w"])) / 2
+                        kwh = avg_w * (elapsed / 3600) / 1000
+                        avg_price = (float(previous["price_per_kwh"]) + float(row["price_per_kwh"])) / 2
+                        bucket["energy"] += kwh
+                        bucket["cost"] += kwh * avg_price
+                        if previous["power_estimated"] or row["power_estimated"]:
+                            bucket["estimated"] = 1
+                    elif elapsed > MAX_INTEGRATION_GAP_SECONDS:
+                        bucket["incomplete"] = 1
+                previous = row
+            for hour, bucket in buckets.items():
+                averages = [
+                    bucket["sums"][metric] / bucket["counts"][metric] if bucket["counts"][metric] else None
+                    for metric in SAMPLE_METRICS
+                ]
+                conn.execute(
+                    f"""INSERT OR REPLACE INTO samples_hourly(device_id,hour_ts,sample_count,
+                            {",".join(SAMPLE_METRICS)},energy_kwh,cost,estimated,incomplete)
+                        VALUES(?,?,?,{",".join("?" * len(SAMPLE_METRICS))},?,?,?,?)""",
+                    (
+                        device_id, hour, bucket["count"], *averages,
+                        bucket["energy"], bucket["cost"], bucket["estimated"], bucket["incomplete"],
+                    ),
+                )
+                written += 1
+        return written
+
+    def energy_summary(self, start_ts: int, end_ts: int, device_name: str | None = None) -> dict[str, Any]:
+        """Energy and cost for a period, combining hourly rollups (old data) with raw samples (recent data)."""
         energy = 0.0
         cost = 0.0
         complete = True
-        previous: dict[str, sqlite3.Row] = {}
-        for row in rows:
-            name = row["nut_name"]
-            prev = previous.get(name)
-            if prev is not None:
-                elapsed = int(row["ts"]) - int(prev["ts"])
-                if 0 < elapsed <= MAX_INTEGRATION_GAP_SECONDS:
-                    avg_w = (float(prev["real_power_w"]) + float(row["real_power_w"])) / 2
-                    kwh = avg_w * (elapsed / 3600) / 1000
-                    avg_price = (float(prev["price_per_kwh"]) + float(row["price_per_kwh"])) / 2
-                    energy += kwh
-                    cost += kwh * avg_price
-                elif elapsed > MAX_INTEGRATION_GAP_SECONDS:
-                    complete = False
-            previous[name] = row
-        return energy, cost, complete
+        estimated = False
+        with self.connect() as conn:
+            watermark = self._rollup_watermark(conn)
+            if watermark and start_ts < watermark:
+                params: list[Any] = [start_ts, min(end_ts, watermark)]
+                where = "h.hour_ts + 3600 > ? AND h.hour_ts < ?"
+                if device_name:
+                    where += " AND d.nut_name=?"
+                    params.append(device_name)
+                row = conn.execute(
+                    f"""SELECT COALESCE(SUM(h.energy_kwh),0) AS e, COALESCE(SUM(h.cost),0) AS c,
+                               COALESCE(MAX(h.estimated),0) AS est, COALESCE(MAX(h.incomplete),0) AS inc
+                        FROM samples_hourly h JOIN devices d ON d.id=h.device_id WHERE {where}""",
+                    params,
+                ).fetchone()
+                energy += float(row["e"])
+                cost += float(row["c"])
+                estimated = bool(row["est"])
+                complete = not row["inc"]
+            raw_from = max(start_ts, watermark) if watermark else start_ts
+            if raw_from <= end_ts:
+                # The interval that crosses the watermark belongs to the first unrolled hour.
+                query_from = watermark - MAX_INTEGRATION_GAP_SECONDS if watermark and start_ts <= watermark else raw_from
+                params = [query_from, end_ts]
+                where = "s.ts BETWEEN ? AND ? AND s.real_power_w IS NOT NULL"
+                if device_name:
+                    where += " AND d.nut_name=?"
+                    params.append(device_name)
+                rows = conn.execute(
+                    f"""SELECT d.nut_name,s.ts,s.real_power_w,s.price_per_kwh,s.power_estimated
+                        FROM samples s JOIN devices d ON d.id=s.device_id
+                        WHERE {where} ORDER BY d.nut_name,s.ts""",
+                    params,
+                ).fetchall()
+                previous: dict[str, sqlite3.Row] = {}
+                for row in rows:
+                    name = row["nut_name"]
+                    prev = previous.get(name)
+                    previous[name] = row
+                    if prev is None or int(row["ts"]) < raw_from:
+                        continue
+                    elapsed = int(row["ts"]) - int(prev["ts"])
+                    if 0 < elapsed <= MAX_INTEGRATION_GAP_SECONDS:
+                        avg_w = (float(prev["real_power_w"]) + float(row["real_power_w"])) / 2
+                        kwh = avg_w * (elapsed / 3600) / 1000
+                        avg_price = (float(prev["price_per_kwh"]) + float(row["price_per_kwh"])) / 2
+                        energy += kwh
+                        cost += kwh * avg_price
+                        if prev["power_estimated"] or row["power_estimated"]:
+                            estimated = True
+                    elif elapsed > MAX_INTEGRATION_GAP_SECONDS:
+                        complete = False
+        return {"energy_kwh": energy, "cost": cost, "complete": complete, "estimated": estimated}
+
+    def energy_and_cost(self, start_ts: int, end_ts: int, device_name: str | None = None) -> tuple[float, float, bool]:
+        summary = self.energy_summary(start_ts, end_ts, device_name)
+        return summary["energy_kwh"], summary["cost"], summary["complete"]
+
+    def history_hourly(self, start_ts: int, end_ts: int, device_name: str | None, max_points: int = 500) -> list[dict[str, Any]]:
+        """Long-range chart series from the permanent hourly rollups."""
+        bucket = max(HOUR_SECONDS, math.ceil((end_ts - start_ts) / max_points))
+        params: list[Any] = [start_ts, end_ts]
+        where = "h.hour_ts BETWEEN ? AND ?"
+        if device_name:
+            where += " AND d.nut_name=?"
+            params.append(device_name)
+        query = f"""
+        SELECT d.nut_name,
+               CAST(h.hour_ts / {bucket} AS INTEGER) * {bucket} AS ts,
+               AVG(h.battery_charge) AS battery_charge,
+               AVG(h.runtime_seconds) AS runtime_seconds,
+               AVG(h.load_percent) AS load_percent,
+               AVG(h.input_voltage) AS input_voltage,
+               AVG(h.output_voltage) AS output_voltage,
+               AVG(h.real_power_w) AS real_power_w
+        FROM samples_hourly h JOIN devices d ON d.id=h.device_id
+        WHERE {where}
+        GROUP BY d.nut_name, CAST(h.hour_ts / {bucket} AS INTEGER)
+        ORDER BY ts,d.nut_name
+        """
+        with self.connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
 
     def events(self, start_ts: int, end_ts: int, device_name: str | None = None) -> list[dict[str, Any]]:
         where = "e.started_at<=? AND COALESCE(e.ended_at,?)>=?"
@@ -407,8 +655,16 @@ class Database:
             conn.commit()
 
     def prune_samples(self, retention_days: int) -> int:
-        cutoff = int(time.time()) - retention_days * 86400
+        """Delete raw samples older than the retention period, but only once they are rolled up hourly.
+
+        The last quarter hour before the rollup boundary is kept: the energy interval that crosses the
+        boundary is still integrated from raw samples.
+        """
         with self._write_lock, self.connect() as conn:
+            watermark = self._rollup_watermark(conn)
+            if watermark == 0:
+                return 0
+            cutoff = min(int(time.time()) - retention_days * 86400, watermark - MAX_INTEGRATION_GAP_SECONDS)
             cursor = conn.execute("DELETE FROM samples WHERE ts<?", (cutoff,))
             conn.commit()
         return int(cursor.rowcount)
