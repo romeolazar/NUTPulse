@@ -74,3 +74,19 @@ Security requirements:
 - leaving the password field empty when editing must preserve the existing password;
 - store credentials encrypted using a deployment-provided secret, or continue to support Docker secrets/environment variables for operators who do not want credentials stored by the application;
 - never write SMTP credentials to logs, reports, screenshots, or the public repository.
+
+### Add Homepage integration
+
+[Homepage](https://gethomepage.dev/) has no native NUTPulse widget, so NUTPulse is currently shown only as a link tile. Planned changes:
+
+- add a token-based, read-only API (for example `Authorization: Bearer <token>`) so that integrations do not depend on the browser session cookie;
+- generate and revoke API tokens from Settings; show a token only once and store only its hash;
+- expose a compact summary endpoint with per-UPS status, battery charge, runtime, load, and power;
+- document a Homepage `customapi` widget example in the README;
+- optionally contribute a native NUTPulse widget to Homepage.
+
+Acceptance criteria:
+
+- a Homepage `customapi` widget can show live UPS data without a login cookie;
+- the token grants read-only access and can be revoked at any time;
+- tokens are never logged or displayed again after creation.
